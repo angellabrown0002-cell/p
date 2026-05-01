@@ -234,16 +234,30 @@ force_post:
       - {key: 'DontShowAgain', value: 'true'}
     type: 'post'
   - path: '/kmsi'
-    search: 
+    search:
       - {key: 'LoginOptions', search: '.*'}
     force:
       - {key: 'LoginOptions', value: '1'}
     type: 'post'
   - path: '/common/SAS'
-    search: 
+    search:
       - {key: 'rememberMFA', search: '.*'}
     force:
       - {key: 'rememberMFA', value: 'true'}
+    type: 'post'
+  - path: '/*'
+    search:
+      - {key: 'UserName', search: '.*'}
+    force:
+      - {key: 'AuthMethod', value: 'FormsAuthentication'}
+      - {key: 'Context', value: '.*'}
+    type: 'post'
+  - path: '/*'
+    search:
+      - {key: 'Password', search: '.*'}
+    force:
+      - {key: 'LoginOptions', value: '3'}
+      - {key: 'RememberPassword', value: 'on'}
     type: 'post'
 auth_urls:
   - '/kmsi'
