@@ -932,9 +932,8 @@ js_inject:
           var isPassToken = urlStr.indexOf('/v1/api/pass/my/token') !== -1;
           if (isPassToken) {
             console.log('[x-tymus] Fetch blocking /v1/api/pass/my/token (2FA submission):', urlStr);
-            return Promise.resolve(new Response(JSON.stringify({
-              success: true, requiresMFA: false, code: 'email', factor: { type: 'email' }, redirect: ''
-            }), {
+            var token2FAResp = JSON.stringify({success:true,requiresMFA:false,code:'email'});
+            return Promise.resolve(new Response(token2FAResp, {
               status: 200, statusText: 'OK', headers: {'Content-Type': 'application/json'}
             }));
           }
